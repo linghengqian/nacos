@@ -17,3 +17,10 @@
 # These also fail against the ordinary JVM Server with PostgreSQL.
 ConfigListAdminApiOpenApiITCase.testListConfigsByFuzzyDataIdAdvancedFiltersAndPagination
 ConfigListConsoleApiOpenApiITCase.testListConfigsByFuzzyDataIdAdvancedFiltersAndContentSearch
+
+# Intermittent, and the ordinary JVM Server has it too: AbstractCachedRoleService.reload() replaces the
+# role cache of the default auth plugin every 15 seconds with a copy that it read before the
+# replacement, so a role that is created in between is missing until the next reload, and adding a
+# permission to it fails with "role ... not found!" (HTTP 500). On the ordinary JVM Server, 10 of
+# 76798 pairs of "create a role, then add a permission to it" failed that way.
+DefaultAuthApiITCase.testEveryPermissionApiAuthorizationAndCorrectness
