@@ -243,16 +243,17 @@ the server provider behind `ServerBuilder`; SnakeYAML, which builds the model cl
 VirtualService and of a DestinationRule from the configurations that carry an Istio tag (they are
 registered in full); and the accessors of the generated protobuf messages of its MCP and xDS
 responses. The adaptor logs every response that it pushes when its logger
-`com.alibaba.nacos.istio.main` is at debug level, which is the level that the logging configuration
-of the distribution sets, and printing a message makes protobuf look up every accessor of the
-message and of its builder. A lookup that is not registered fails, and the push with it. The tracing
-agent records only the accessors that a run invokes, so the entries of these messages come from the
-lookups themselves, observed on a JVM with a `MethodEntryRequest` of the Java Debug Interface on
-`GeneratedMessageV3.getMethodOrDie` while the messages were printed. `NativeIstioITCase` keeps that
-logger at debug level, so a missing entry fails the test. The incremental xDS protocol
-(`DeltaAggregatedResources`) is not covered: its generators answer the first request with `null`,
-and `DeltaConnection.push` fails on that with a `NullPointerException` on the ordinary JVM Server as
-well.
+`com.alibaba.nacos.istio.main` is at debug level, and printing a message makes protobuf look up
+every accessor of the message and of its builder. A lookup that is not registered fails, and the
+push with it. The logging configuration of the distribution sets that level for the ordinary Server.
+The AOT application logs with the packaged default configuration and does not read it, so a Native
+Server needs `logging.level.com.alibaba.nacos.istio.main=DEBUG` to get there. `NativeIstioITCase`
+sets it, so a missing entry fails the test. The tracing agent records only the accessors that a run
+invokes, so the entries of these messages come from the lookups themselves, observed on a JVM with a
+`MethodEntryRequest` of the Java Debug Interface on `GeneratedMessageV3.getMethodOrDie` while the
+messages were printed. The incremental xDS protocol (`DeltaAggregatedResources`) is not covered: its
+generators answer the first request with `null`, and `DeltaConnection.push` fails on that with a
+`NullPointerException` on the ordinary JVM Server as well.
 
 ### What the build gets elsewhere
 
@@ -550,8 +551,10 @@ every Server of the run for missing registrations.
 
 Tests that fail for a reason that does not depend on the Native executable are listed in
 `test/scripts/native-ci-baseline.txt`; they are reported but do not fail the job. The tests that
-call the ARD adaptor on port 9080 are in `test/scripts/native-ci-baseline-ard-off.txt`, which
-every scenario reads except `features`.
+call the ARD adaptor or the MCP registry on port 9080 are in
+`test/scripts/native-ci-baseline-ard-off.txt`, which every scenario reads except `features`. The
+one test that fails only when the Istio adaptor is built in, and fails on the ordinary JVM Server
+then as well, is in `test/scripts/native-ci-baseline-istio.txt`, which only `features` reads.
 
 The workflow only calls the stages of `test/scripts/native-ci.sh`, so the same stages reproduce a
 job on any Linux host that has GraalVM 25, Maven, Python 3 and Docker (see the script header for

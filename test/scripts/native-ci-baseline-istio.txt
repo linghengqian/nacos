@@ -1,0 +1,22 @@
+# Copyright 1999-2026 Alibaba Group Holding Ltd.
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+# http://www.apache.org/licenses/LICENSE-2.0
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Integration tests that fail in the builds with the Istio adaptor (nacos.extension.naming.istio.enabled),
+# for a reason that does not depend on the Native executable: they fail against the ordinary JVM Server
+# with the adaptor as well, and pass without it. Deregistering an instance that does not exist removes
+# the one that the same connection has published for the service, because the Server removes by service,
+# and the test expects it to stay. A query reads the cached service info, which a push task refreshes
+# 500 ms later, so the test passes while the cache is stale. The adaptor reads the registry at once on
+# every deregistration (NacosServiceInfoResourceWatcher), so the cache is fresh by then. The features
+# scenario of test/scripts/native-ci.sh is the only one that builds the adaptor in, and the only one that
+# reads this file. Same format as native-ci-baseline.txt.
+
+NamingServiceJavaSdkITCase.testDuplicateRegisterAndMissingDeregisterAreIdempotent

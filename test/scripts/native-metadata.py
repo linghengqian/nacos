@@ -182,10 +182,12 @@ CONDITION_GROUPS = (
     ("io.grpc.netty.shaded.io.grpc.netty.Utils", (
         "io.grpc/grpc-netty-shaded",)),
     # The generated messages of the xDS API and the common protos are there for the Istio adaptor,
-    # and the Server reaches them by reflection when it logs a response at debug level, which is the
-    # level of its logging configuration: protobuf looks up every accessor of a message and of its
-    # builder, and a lookup that is not registered fails. IstioServer starts the adaptor, so it is the
-    # type that makes the Server use them, and a build without the adaptor leaves these entries out.
+    # and the Server reaches them by reflection when the adaptor logs a response at debug level (the
+    # logging configuration of the distribution sets that for the ordinary Server, and a Native Server
+    # needs logging.level.com.alibaba.nacos.istio.main=DEBUG): protobuf looks up every accessor of a
+    # message and of its builder, and a lookup that is not registered fails. IstioServer starts the
+    # adaptor, so it is the type that makes the Server use them, and a build without the adaptor
+    # leaves these entries out.
     # The classes are loaded earlier, as the superclasses of the Spring beans of the adaptor, when the
     # definitions of the beans are registered, so a class log cannot confirm the order by loads. It
     # shows that none of them is initialized before IstioServer starts to initialize. See

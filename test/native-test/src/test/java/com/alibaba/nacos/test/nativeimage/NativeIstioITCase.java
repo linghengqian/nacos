@@ -67,9 +67,10 @@ import static org.junit.jupiter.api.Assertions.fail;
  * application contexts are prepared). The Server here also switches its port on and repeats the
  * build switch, which the ordinary Server needs.
  *
- * <p>The Server logs the responses that it pushes at debug level, which is the level that its
- * logging configuration sets for the adaptor. That reads every field of the generated messages by
- * reflection, so the test asks for the same level.
+ * <p>The adaptor logs the responses that it pushes at debug level. The logging configuration of the
+ * distribution sets that level for the ordinary Server, and the AOT application and the Native
+ * executable do not read that configuration, so the test sets the level itself. Printing a message
+ * reads every accessor of the generated messages by reflection, which is what the test exercises.
  *
  * @author Nacos
  */

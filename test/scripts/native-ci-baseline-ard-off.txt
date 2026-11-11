@@ -9,13 +9,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Integration tests that fail in the builds without the ARD adaptor, for a reason that does not depend
-# on the Native executable: they request the adaptor on port 9080. It is a structural build switch
-# (nacos.ai.ard.enabled) that most builds leave off, so nothing listens there. The features scenario
-# of test/scripts/native-ci.sh builds it in and does not read this file, so these tests have to pass
+# Integration tests that fail in the builds without the ARD adaptor and the MCP registry, for a reason
+# that does not depend on the Native executable: they request an adaptor on port 9080. The adaptors are
+# structural build switches (nacos.ai.ard.enabled, nacos.ai.mcp.registry.enabled) that most builds
+# leave off, so nothing listens there ("Connection refused"). The features scenario of
+# test/scripts/native-ci.sh builds them in and does not read this file, so these tests have to pass
 # there. Same format as native-ci-baseline.txt.
 
 ArdAdaptorOpenApiITCase.*
+McpRegistryAdaptorOpenApiITCase.*
 AuthScopeGuardITCase.shouldKeepNacosCredentialsOutOfExternalRequests
 # Invocations 5 to 11 are the ard(...) scenarios; 1 to 4 run against the Server and have to pass.
 ConditionalAnonymousAuthorizationITCase.testEveryConditionalAnonymousOperation(AnonymousScenario)?[5-9]?

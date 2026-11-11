@@ -416,6 +416,8 @@ stage_report() {
     local baselines=("$ROOT/test/scripts/native-ci-baseline.txt")
     if [ "$SCENARIO" != "features" ]; then
         baselines+=("$ROOT/test/scripts/native-ci-baseline-ard-off.txt")
+    else
+        baselines+=("$ROOT/test/scripts/native-ci-baseline-istio.txt")
     fi
     python3 -I - "$ROOT" "${baselines[@]}" <<'PY' || status=1
 import fnmatch
