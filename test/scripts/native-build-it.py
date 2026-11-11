@@ -182,6 +182,20 @@ def main():
         assert "core" not in manifest and "web" not in manifest
         assert not (native / "aot/core").exists() and not (native / "aot/web").exists()
         assert not list((native / "classes").rglob("*__CoreApplicationContextInitializer.class"))
+        # The driver of Oracle is a dependency of the module, which is what selects its metadata in
+        # the GraalVM reachability metadata repository. A jar in the plugin directory would not.
+        repository = root / "bootstrap/target/native-reachability"
+        shutil.rmtree(repository, ignore_errors=True)
+        run("oracle-driver", common + [configuration("oracle", "oracle", False),
+            "-Dnacos.native.oracle.driver=23.26.1.0.0"])
+        manifest = properties(native / "aot-manifest.properties")
+        assert manifest["datasource"] == "oracle"
+        assert "oracle.jdbc.OracleDriver" in manifest["spi.java.sql.Driver"]
+        classpath = shlex.split((native / "classpath.args").read_text())[1].split(os.pathsep)
+        assert any(part.endswith("/ojdbc8-23.26.1.0.0.jar") for part in classpath)
+        assert str(repository) in classpath
+        assert list((repository / "META-INF/native-image/com.oracle.database.jdbc/ojdbc8")
+                    .rglob("reachability-metadata.json"))
         run("derby-opt-in-required", common + [configuration("derby", "derby", True),
             "-Dnacos.native.standalone=true"], "Embedded Derby Native requires")
         release = ["-pl", "distribution", "package"]
