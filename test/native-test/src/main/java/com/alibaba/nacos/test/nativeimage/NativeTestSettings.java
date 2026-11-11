@@ -41,9 +41,23 @@ public final class NativeTestSettings {
     public static final String DISTRIBUTION = "nacos.native.test.distribution";
 
     /**
-     * {@code native} runs the Native executable, {@code jvm} the ordinary Server.
+     * {@code native} runs the Native executable, {@code jvm} the ordinary Server, and {@code trace}
+     * the application of the AOT build on the JVM of GraalVM under the tracing agent, as {@code
+     * test/scripts/native-trace-server.sh} does it. {@code classlog} runs the same application
+     * without the agent and logs the order in which the classes are loaded and initialized, for
+     * {@code test/scripts/native-condition-order.py}. The last two need a finished {@code
+     * -Pnative} build (a dry run is enough) and {@link #TRACE_DIR}; any distribution archive
+     * provides the home of the Server.
      */
     public static final String MODE = "nacos.native.test.mode";
+
+    /**
+     * The directory that receives what the tracing agent records (mode {@code trace}). The first
+     * Server starts a trace there and every later one, such as the Server of the next test class or
+     * a restart, adds to it. In mode {@code classlog} every Server writes a log file of its own
+     * there.
+     */
+    public static final String TRACE_DIR = "nacos.native.test.trace.dir";
 
     /**
      * Options of the Native executable, the value of {@code NACOS_NATIVE_OPTS}.
@@ -112,6 +126,41 @@ public final class NativeTestSettings {
      */
     public static boolean jvmMode() {
         return "jvm".equalsIgnoreCase(System.getProperty(MODE, "native"));
+    }
+
+    /**
+     * Whether the AOT application runs on a JVM, under the tracing agent or with a class log,
+     * instead of the Native executable.
+     *
+     * @return true for mode {@code trace} and {@code classlog}
+     */
+    public static boolean traceMode() {
+        String mode = System.getProperty(MODE, "native");
+        return "trace".equalsIgnoreCase(mode) || "classlog".equalsIgnoreCase(mode);
+    }
+
+    /**
+     * Whether the AOT application logs the order of its class loading instead of running under
+     * the tracing agent.
+     *
+     * @return true for mode {@code classlog}
+     */
+    public static boolean classlogMode() {
+        return "classlog".equalsIgnoreCase(System.getProperty(MODE, "native"));
+    }
+
+    /**
+     * The directory that receives the trace.
+     *
+     * @return the absolute directory named by {@link #TRACE_DIR}
+     */
+    public static Path traceDirectory() {
+        String value = System.getProperty(TRACE_DIR, "").trim();
+        if (value.isEmpty()) {
+            throw new IllegalStateException(TRACE_DIR + " names the directory that receives the "
+                    + "trace of mode trace");
+        }
+        return Path.of(value).toAbsolutePath();
     }
 
     /**

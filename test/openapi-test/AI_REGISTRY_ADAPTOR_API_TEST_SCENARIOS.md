@@ -56,8 +56,8 @@ administrator or Client credential.
 | `ArdSearchServiceImplTest`, `ArdSearchControllerTest`, `ArdOpenApiContractTest`, `ArdAdaptorOpenApiITCase` | `GET /v3/ai/ard`, `GET /v3/ai/ard/agents`, `POST /v3/ai/ard/search`, `POST /v3/ai/ard/explore` | Partial | Public-resource HTTP cases verify query results, legacy binding and pagination; context and facet scenarios are detailed below. Private authorized-resource completeness remains excluded as `DAUTH-F03`, so this row stays Partial. |
 | `ArdExceptionHandlerTest`, `AuthFilterTest`, `ArdWebAuthenticationTest`, `ArdOpenApiContractTest` | Errors from ARD controller and authentication operations | Covered | Verifies in the independent adaptor web context that rejected credentials return HTTP 401 with the exact `{errorCode, message}` body, while a valid identity reaches canonical visibility checks without the Nacos `Result<T>` envelope. |
 | `ArdSearchServiceImplTest`, `ArdAdaptorOpenApiITCase` | `GET /v3/ai/ard/ai-catalog.json`, `GET /.well-known/ai-catalog.json` | Partial | Live public catalogs cover 105 resources, namespace isolation, legacy schema and unchanged projection after reading the new manifest. Private authorized completeness remains blocked by `DAUTH-F03`. |
-| `ArdWellKnownControllerTest`, `ArdWebAuthenticationTest`, `ArdAdaptorOpenApiITCase`, `ConditionalAnonymousAuthorizationITCase` | `GET /.well-known/ard.json` | Covered | New manifest schema, registry-only publication, context, absolute base URL followed once to Search, explicit invalid/blank credentials, valid identity and anonymous policy; the method-level authorization inventory includes the new operation. Legacy routes retain their contracts. No namespace-level new route is introduced. |
-| `ArdArtifactServiceTest`, `ArdSearchControllerTest`, `ArdWebContextIsolationTest`, `ArdAdaptorOpenApiITCase` | `GET /v3/ai/ard/artifacts` | Partial | Public-resource HTTP and component tests cover exact Version/digest artifacts, representation selection, web-context isolation and offline errors. Private authorized-resource completeness remains excluded as `DAUTH-F03`. |
+| `ArdWellKnownControllerTest`, `ArdWebAuthenticationTest`, `ArdAdaptorOpenApiITCase`, `ConditionalAnonymousAuthorizationITCase` | `GET /.well-known/ard.json` | Covered | New manifest schema, registry-only publication, context, absolute base URL followed to nonempty public Agent Search and exact Version/digest Artifact, explicit invalid/blank credentials, valid identity and anonymous policy; the method-level authorization inventory includes the new operation. Legacy routes retain their contracts. No namespace-level new route is introduced. |
+| `ArdArtifactServiceTest`, `ArdSearchControllerTest`, `ArdWebContextIsolationTest`, `ArdAdaptorOpenApiITCase` | `GET /v3/ai/ard/artifacts` | Partial | Public-resource HTTP and component tests cover exact Version/digest artifacts, representation selection, web-context isolation and offline errors. Private authorized-resource completeness remains excluded as `DAUTH-F03`. MCP canonical-name/UUID Artifact mapping remains unresolved and is not covered by public Agent assertions. |
 
 ### Agent 地址模型统一：实施与验收（2026-09-15）
 
@@ -121,3 +121,57 @@ GET non-integer pageSize still returns the previously observed 500 and is a sepa
 `ArdContextResolverTest` covers the offline base, IRI expansion, reset and
 controlled loader success/error cases; see the [context test design](ARD_V091_TEST_DESIGN.md#context-processing).
 Loopback loader UT does not count as deployed API IT or raise the existing coverage classifications.
+
+## ARD trust declaration consistency
+
+`ArdAdaptorOpenApiITCase.testConfiguredTrustDeclaration` runs against an external
+standalone deployment. It does not change server configuration inside the test.
+
+| Deployment / scenario | Expected HTTP contract |
+| --- | --- |
+| No identity / no explicit Registry publisher | No trustManifest; preserve legacy identifiers without claiming FQDN authority conformance |
+| Matching HTTPS, SPIFFE or did:web Registry authority | Registry entry has its own publisher/trust; ordinary resources have no inherited trust; nonempty Search/List/type Explore and Artifact work |
+| Unknown framework and custom identityType | Registry declaration remains unverified; new manifest keeps the hint, legacy projections keep only their original enum |
+| Invalid Registry FQDN, missing explicit publisher with trust, recognized mismatch or malformed identity | Only manifest and both catalogs containing the Registry return ARD 500 / INTERNAL_ERROR; resource queries and Artifact still work |
+| Resource publisher/publisherId/trust paths | Search/Explore filter, Explore facet and List filter return 400 / INVALID_ARGUMENT, including aliases, full IRI, legacy filters and empty/type short-circuits |
+| Invalid credentials / malformed request with bad Registry configuration | Authentication 401 and normal request validation 400 retain precedence |
+| Proxy Host, base URL or Registry publisher rotation | Resource IDs stay unchanged; only an explicit Registry publisher change changes its entry ID; the legacy resource prefix is held fixed |
+
+`testConfiguredTrustDeclaration` prepares a real resource through the native API and
+checks nonempty resource queries even when Registry documents are rejected.
+`testResourceIdentityDimensionsAreUnsupported` checks canonical fields, aliases/full
+IRIs, legacy input and invalid credentials. The production query parser remains
+open; these dimensions lack resource-level backing data.
+
+Test settings `nacos.test.ard.trust.publisher` (expected Registry publisher, default
+`nacos`), `nacos.test.ard.trust.identity` and `nacos.test.ard.trust.identity-type`
+(default empty) describe the expected Registry declaration. Server configuration uses
+`nacos.ai.ard.registry.publisher`; `nacos.test.ard.legacy-prefix` (default `nacos`)
+asserts unchanged ordinary resource IDs. `nacos.test.ard.trust.expect-rejection=true`
+expects rejection only from Registry-bearing documents. Default CI exercises absent
+trust and unsupported resource dimensions; configured cases need separate deployments.
+Parser tests cover FQDN syntax, malformed authorities, exact domain comparison and
+identity-type-independent checks. No test claims cryptographic verification, DID
+resolution, ownership or delegated authority. Multi-publisher resource registration,
+resource trust persistence/indexing and legacy-ID migration remain unavailable;
+these tests must not claim that capability. Existing coverage classifications and
+`DAUTH-F03` remain unchanged; the disabled case is not counted as passed.
+
+## Nonempty discovery-to-artifact coverage
+
+`ArdAdaptorOpenApiITCase.testDiscoveredRegistryReturnsPublicAgentArtifact` follows
+the advertised Registry URL, requires an exact public Agent result, and downloads
+the returned Artifact URL. It compares name, version and content digest with the
+main resource API and rejects explicitly invalid credentials. Requests remain
+bound to the adaptor origin and fixtures use the existing cleanup helpers.
+
+`ArdOpenApiContractTest` and the HTTP cases share the existing offline schema
+validator. Java format checks and any local upstream-tool results are separate
+from API coverage totals. Private MCP recall and MCP Artifact identity mapping
+remain TODO; the existing coverage classifications are unchanged.
+
+## MCP Registry `/v0` response conversion
+
+| API surface / test class | Covered API operations | Current status | Current / missing coverage |
+| --- | --- | --- | --- |
+| `NacosMcpRegistryServiceTest` (module UT), `McpRegistryControllerTest` | `GET /v0/servers`, `GET /v0/servers/{serverName}/versions/{version}` response assembly | Partial | Module unit tests verify remotes URL construction for `DIRECT` endpoints (null protocol/path defaults to `http` and empty path; explicit protocol/path and default-port omission preserved) and `_meta.official.status` population from the MCP server lifecycle status. Controller contract tests verify routing and envelope shape with a mocked service. Standalone IT: `McpRegistryAdaptorOpenApiITCase` registers a `DIRECT`-endpoint MCP server without `protocol`/`path` through the admin flow and verifies `GET /v0/servers` plus `GET /v0/servers/{name}/versions/{version}` render an `http` remotes URL with no `null` fragment and a populated `_meta.official.status` (requires `nacos.ai.mcp.registry.enabled=true`, now enabled in the IT workflows). |

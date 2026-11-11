@@ -293,22 +293,24 @@ Bootstrap ships GraalVM reachability metadata for the default Server combination
 build does not require the operator to trace the Server first.
 
 - Location and format. The metadata is a set of `reachability-metadata.json` files in the GraalVM
-  unified format below `META-INF/native-image/` in Bootstrap's resources, one file per owner, each
-  in `<groupId>/<artifactId>/`: `com.alibaba.nacos/nacos-bootstrap` holds what Nacos builds
-  itself, the folder of the artifact holds each third-party artifact, and `jdk/runtime` holds
-  classes of the JDK. The owner of an entry is the artifact whose jar on the Native classpath
-  holds the class or the resource. Folders carry no version. The `native` profile reads the files
+  unified format below `META-INF/native-image/` in Bootstrap's resources, one file per owner:
+  `com.alibaba.nacos/nacos-bootstrap` holds what Nacos builds itself, each third-party
+  artifact holds its own folder below `<groupId>/<artifactId>/<version>/`, and `jdk/runtime`
+  holds classes of the JDK. The owner of an entry is the artifact whose jar on the Native
+  classpath holds the class or the resource. The version on the folder is the version of that
+  jar; a check against the classpath fails when they differ, so a version bump cannot silently
+  reuse the entries of another version. The `native` profile reads the files
   as part of Bootstrap's classes. An ordinary JVM must not read them, and the JVM artifact
   contract must not depend on them.
 - Scope. It covers the dynamic access that static analysis and Spring AOT cannot see for the
   bundled default plugins, the bundled MySQL and PostgreSQL drivers, gRPC payload and model
   classes, SPI providers, resources and resource bundles, as exercised by the standalone OpenAPI,
   Java SDK and Maintainer SDK integration suites, and, as exercised by the scenarios of
-  `test/native-test`, the three AI registry contexts, the Kubernetes sync, the DNS adaptor and a
-  cluster of three nodes (Distro, Raft and the requests between the nodes). Other plugins and
-  drivers, embedded Derby, Oracle and the Istio adaptor are outside the bundled scope. Their
-  metadata comes from the extension itself or from `nacos.native.metadata`, and their support must
-  be validated and reported separately.
+  `test/native-test`, the three AI registry contexts, the Kubernetes sync, the Istio adaptor, the
+  DNS adaptor and a cluster of three nodes (Distro, Raft and the requests between the nodes). Other
+  plugins and drivers, embedded Derby and Oracle are outside the bundled scope. Their metadata
+  comes from the extension itself or from `nacos.native.metadata`, and their support must be
+  validated and reported separately.
 - Content rules. Entries derive from tracing representative runs on the exact classpath of the
   Native build. What no trace contains comes from the reports of an exact-mode build or, for
   lookups that the tracing agent does not record (for example the accessors that protobuf looks up

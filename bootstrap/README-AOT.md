@@ -60,8 +60,10 @@ build helpers nor test dependencies are included in the Native application. It a
 
 Prepare a build configuration using the normal `application.properties` format. It only has to
 carry the structural choices: `spring.sql.init.platform=postgresql` is a complete build
-configuration for a PostgreSQL image (`mysql` for MySQL), plus the AI registry switches if those
-contexts are wanted. Ports, database URLs and credentials belong to the runtime configuration.
+configuration for a PostgreSQL image (`mysql` for MySQL), plus the switches of the AI registries,
+of the Kubernetes sync (`nacos.k8s.sync.enabled`) and of the Istio adaptor
+(`nacos.extension.naming.istio.enabled`) if those are wanted. Ports, database URLs and credentials
+belong to the runtime configuration.
 Use a disposable build configuration, not production credentials. The reachability metadata for
 the bundled plugins and the MySQL and PostgreSQL drivers ships with Bootstrap (see
 [Bundled reachability metadata](#bundled-reachability-metadata)); additional plugins, JDBC drivers
@@ -133,6 +135,28 @@ Ordinary JVM packaging still uses `mvn '-Prelease-nacos,!dev' clean install` and
 Its default classpath-based plugin loading and startup behavior are unchanged. The Native profile
 is never activated implicitly by the JDK vendor or `JAVA_HOME`.
 
+## Run as a Docker image
+
+`distribution/Dockerfile.native` repacks the Native distribution archive into an image, so build
+that first and then build the image from the repository root:
+
+```sh
+mvn -B '-Pnative,release-native,!dev' -pl distribution -am clean package \
+  -Dnacos.native.config=/absolute/path/build/application.properties \
+  -Dnacos.native.standalone=true
+docker build -f distribution/Dockerfile.native -t nacos-server-native distribution/target
+docker run -d --name nacos-native -p 8848:8848 -p 8080:8080 \
+  -v /absolute/path/conf:/opt/nacos/conf nacos-server-native
+```
+
+The image holds the executable of one build: its datasource, switches and mode are fixed, and the
+archive is specific to the platform it was compiled on (amd64 from the Native CI job). The Server
+runs as a non-root user with its home at `/opt/nacos` and stays in the foreground. Mount a `conf`
+directory with matching structural choices and runtime settings, or pass Native VM flags with
+`-e NACOS_NATIVE_OPTS='-Xmx1g'`. Readiness is the same liveness check the tests use. A nightly
+image is published to GHCR by `.github/workflows/native-nightly.yml`
+(`ghcr.io/alibaba/nacos:native-nightly`) once this change is merged.
+
 ## Bundled reachability metadata
 
 Bootstrap carries GraalVM reachability metadata in the unified format below
@@ -146,12 +170,11 @@ not depend on them. They hold only what the build does not get from another sour
 ### Layout
 
 Each file belongs to one owner, as a library ships the metadata of its own classes, in
-`META-INF/native-image/<groupId>/<artifactId>/`:
+`META-INF/native-image/<groupId>/<artifactId>/<version>/` for a third-party artifact, for example
+`org.postgresql/postgresql/42.7.12`:
 
 - `com.alibaba.nacos/nacos-bootstrap`: the classes and resources of Nacos itself, from every module.
-- `<groupId>/<artifactId>`: the classes and resources of one third-party artifact, for example
-  `org.postgresql/postgresql`, `org.apache.tomcat.embed/tomcat-embed-core` or
-  `org.springframework.boot/spring-boot`.
+- `<groupId>/<artifactId>/<version>`: the classes and resources of one third-party artifact.
 - `jdk/runtime`: the classes of the JDK that Nacos or a library reaches by reflection.
 
 The owner of an entry is the artifact whose jar on the Native classpath contains the class or the
@@ -162,9 +185,10 @@ to Nacos if Nacos has it, otherwise to the first jar that does. `refresh` places
 removes the file of an owner that has none left, so nobody moves entries by hand, and
 `check --classpath` verifies the placement.
 
-The folders carry no version. The versions of the dependencies come from one managed set and change
-with it, so a versioned folder would have to move with every bump, and GraalVM does not look at the
-names of folders.
+The version on the folder is the version of that jar on the Native classpath. `check --classpath`
+fails when they differ, so a version bump cannot silently reuse the entries of another version:
+refresh after a bump, which moves the file. Nacos and the JDK keep unversioned folders; GraalVM
+does not look at the names of folders.
 
 ### What it covers
 
@@ -201,13 +225,34 @@ the combination the suites of the [Native CI job](#the-native-ci-job) validate. 
 cannot reach is validated by the scenarios of `test/native-test` (see
 [Test with Testcontainers](#test-with-testcontainers)): the three AI registry contexts
 (`nacos.ai.mcp.registry.enabled`, `nacos.ai.skill.registry.enabled`, `nacos.ai.ard.enabled`), the
-Kubernetes sync, the DNS adaptor, a plugin that is not part of this repository and a cluster of
-three nodes. It does **not** cover embedded Derby (see
-[below](#native-scope-and-derby-compatibility)), Oracle and the Istio adaptor (they fail on the
-ordinary JVM Server as well, see [below](#test-with-testcontainers)), other third-party plugins or
-drivers, the probing of an instance by the Server with the MYSQL health checker, or a label
-selector with a CMDB behind it. Whoever enables one of these supplies the missing metadata through
-`nacos.native.metadata` or in the plugin's own `META-INF/native-image`, and validates the result.
+Kubernetes sync (`nacos.k8s.sync.enabled`), the Istio adaptor
+(`nacos.extension.naming.istio.enabled`), the DNS adaptor, a plugin that is not part of this
+repository and a cluster of three nodes. It does **not** cover embedded Derby (see
+[below](#native-scope-and-derby-compatibility)), Oracle (it fails on the ordinary JVM Server as
+well, see [below](#test-with-testcontainers)), or other third-party plugins or drivers. The restart
+check covers the MYSQL health checker against a real MySQL on a MySQL datasource and a label
+selector with a CMDB behind it through the test plugin. Whoever enables anything else supplies the
+missing metadata through `nacos.native.metadata` or in the plugin's own `META-INF/native-image`, and
+validates the result.
+
+The Istio adaptor is a switch of the build, like the Kubernetes sync: a package filter keeps it out
+of the component scan unless the build configuration has
+`nacos.extension.naming.istio.enabled=true`, and `nacos.istio.mcp.server.enabled=true` opens its
+gRPC port at run time. It reaches three things dynamically: the service loader of gRPC, which finds
+the server provider behind `ServerBuilder`; SnakeYAML, which builds the model classes of a
+VirtualService and of a DestinationRule from the configurations that carry an Istio tag (they are
+registered in full); and the accessors of the generated protobuf messages of its MCP and xDS
+responses. The adaptor logs every response that it pushes when its logger
+`com.alibaba.nacos.istio.main` is at debug level, which is the level that the logging configuration
+of the distribution sets, and printing a message makes protobuf look up every accessor of the
+message and of its builder. A lookup that is not registered fails, and the push with it. The tracing
+agent records only the accessors that a run invokes, so the entries of these messages come from the
+lookups themselves, observed on a JVM with a `MethodEntryRequest` of the Java Debug Interface on
+`GeneratedMessageV3.getMethodOrDie` while the messages were printed. `NativeIstioITCase` keeps that
+logger at debug level, so a missing entry fails the test. The incremental xDS protocol
+(`DeltaAggregatedResources`) is not covered: its generators answer the first request with `null`,
+and `DeltaConnection.push` fails on that with a `NullPointerException` on the ordinary JVM Server as
+well.
 
 ### What the build gets elsewhere
 
@@ -289,68 +334,13 @@ check.
 
 ### Conditions
 
-Every entry is guarded by a `typeReached` condition, as GraalVM recommends, so that metadata only
-enters an image that contains the code that needs it. The builder includes a conditional entry if
-its type is reachable at build time, and the executable makes the entry available once that type
-is reached: right before the initialization of its class starts, or of a subtype. Until then every
-dynamic access that the entry serves behaves as if the entry did not exist, so a condition type has
-to be initialized before the first access that the entry serves. A type that is only named by a
-class literal is never initialized.
+Every entry carries a `typeReached` condition (see GraalVM docs). The condition is a function of the owner, see `CONDITION_GROUPS` in `native-metadata.py`:
 
-The condition depends on the owner of the entry:
+- Nacos and the JDK: `com.alibaba.nacos.bootstrap.NacosBootstrap`.
+- Spring family and libraries Spring Boot looks up: `org.springframework.boot.SpringApplication`.
+- JDBC drivers: `com.zaxxer.hikari.HikariConfig`; logback: `LoggerFactory`/`LoggerContext`; others: the type that loads the library (see the script for the full table).
 
-- Nacos and the JDK (`com.alibaba.nacos/nacos-bootstrap`, `jdk/runtime`):
-  `com.alibaba.nacos.bootstrap.NacosBootstrap`, the main class of the Native executable, which is
-  initialized before any other Server code runs. The JDK classes are in the metadata because the
-  libraries of the Server reach them, not because one part of the Server does.
-- A third-party artifact: the type that makes the Server use it. That is often not a type of the
-  artifact itself, because something else looks up the classes of an artifact before any of them is
-  initialized. On a start of the Server, `HikariConfig` loads the PostgreSQL driver by name before
-  `org.postgresql.Driver` is initialized, and Spring Boot looks up the classes of Tomcat, Jackson
-  and Micrometer while it builds the application context. `CONDITION_GROUPS` in
-  `native-metadata.py` holds the table, with the reason for each row. In short:
-  - `org.springframework.boot.SpringApplication`: every artifact of the Spring family, and the
-    libraries whose classes Spring Boot looks up (Tomcat, Jackson, Micrometer, Reactor, HikariCP,
-    gRPC API, AspectJ, Kotlin, the client of Kubernetes and others). Spring loads the types in the
-    signatures of a bean while it introspects the bean, so the models of the Kubernetes API are
-    loaded before `K8sSyncServer` is initialized;
-  - `com.zaxxer.hikari.HikariConfig`: the JDBC drivers;
-  - `org.slf4j.LoggerFactory` for SLF4J and logback-classic, `ch.qos.logback.classic.LoggerContext`
-    for logback-core;
-  - the type that loads or initializes the library, for JRaft, Hessian, protobuf, the Disruptor,
-    gRPC (`GrpcUtil`, `LoadBalancerRegistry`, `Utils` of the Netty transport), BouncyCastle
-    (`ClientBuilder`, the only code that uses it), Guava, JCTools and dnsjava.
-
-The guard keeps the metadata out of an image that does not contain what needs it. It does not make
-the Server's own executable smaller, because the Server needs all of it.
-
-A row of the table is checked against a run of the Server. `native-trace-server.sh classlog`
-starts the Server on a JVM with the classpath of the Native build and writes the order in which
-classes are loaded and initialized to a log; `test/scripts/native-condition-order.py` checks, for
-each owner, that the condition type is initialized before the first class of its entries is used.
-Run the smoke test and the restart check, as the Native CI job does, and give the script the log of
-the start and the log of the restart. For the first bundle 73 of the 79 third-party owners were
-confirmed that way. The Kubernetes client, BouncyCastle and the owners of gRPC, whose conditions
-changed for the cluster, were confirmed with the class logs of the ordinary Server in the tests of
-`native-test`. That is weaker evidence, because the AOT application creates its beans in an order of
-its own: a node of a cluster creates its RPC clients while the core context is built, before any gRPC
-server starts, which the ordinary Server does the other way round. An access that has an entry with
-an unreached condition shows in the `exact` variant of the Native CI job as a report for an entry
-that the bundle holds. Of the first 79 owners, six were not confirmed:
-
-- For two, Guava and JCTools, a comparison of load times shows nothing: their entries are
-  package-private superclasses of the condition type, which look up their fields in static
-  initializers that only run as part of the initialization of that type. GraalVM reaches a type
-  right before that starts, as the `SuperType` example in its documentation of conditions shows, so
-  those two are accepted for that reason.
-- Three, dnsjava, HttpClient and RocksDB, have only resource entries, and a class log does not show
-  when a resource is read. The agentscope extension was not used by the run. The types of these
-  four are early ones.
-
-The comparison covers the classes of the reflection entries on the paths of the run. The `exact`
-variant of the Native CI job reports every access without available metadata, a resource and an
-entry whose condition is not reached yet included, so it covers what the suites and the restart
-check exercise; a path that none of them exercises is as uncovered as before.
+Validate with `native-trace-server.sh classlog` + `native-condition-order.py`; the `exact` CI variant reports accesses whose condition is not reached yet.
 
 `refresh` sets the condition of every entry from its owner, whatever the inputs carry, so that a
 trace, the report of an exact-mode build and the committed files can be mixed freely. It stops at
@@ -453,14 +443,10 @@ above.
 ### Test with Testcontainers
 
 `test/native-test` starts from Java what a test of the Native Server needs: the database, the
-infrastructure next to it and the Server itself. A developer runs and debugs a test from an IDE
-the way the CI job runs it, and no step of the job starts a container by hand. It needs Docker, JDK
-17 and the distribution archive of the Server under test.
-
-The Server runs as a process of the host and not in a container. The executable is built on the
-host, and its C library may differ from that of an image, and `bin/startup-native.sh`, which starts
-it, is part of what is tested. The main sources of the module are the harness, which a test module
-can use, and the tests are the integration tests of the module:
+infrastructure next to it and the Server itself, which runs as a process of the host and not in a
+container. A developer runs and debugs a test from an IDE the way the CI job runs it. It needs
+Docker, JDK 17 and the distribution archive of the Server under test. The main sources of the
+module are the harness, and the tests are the integration tests of the module:
 
 | Class | What it does |
 | --- | --- |
@@ -479,7 +465,8 @@ mvn -B -pl test/native-test verify -Pnative-integration-test \
 | System property | Default | Meaning |
 | --- | --- | --- |
 | `nacos.native.test.distribution` | the Native archive in `distribution/target` | The archive to unpack for every Server |
-| `nacos.native.test.mode` | `native` | `jvm` starts the archive of the ordinary Server with `bin/startup.sh`. It tells a failure of the executable from one of the Server and needs no Native build |
+| `nacos.native.test.mode` | `native` | `jvm` starts the archive of the ordinary Server with `bin/startup.sh`. It tells a failure of the executable from one of the Server and needs no Native build. `trace` runs the AOT application on the JVM of GraalVM under the tracing agent, like `test/scripts/native-trace-server.sh`, and `classlog` runs it with a class log for `native-condition-order.py`; both need a finished `-Pnative` build (a dry run is enough), any distribution archive for the home, and `nacos.native.test.trace.dir` |
+| `nacos.native.test.trace.dir` | | Modes `trace` and `classlog`: the directory that receives what the agent records, or one class log per Server. The first Server starts a trace and every later one (the next test class, a restart) adds to it. Curate it with `native-metadata.py refresh` |
 | `nacos.native.test.opts` | `-Xmx1g` | `NACOS_NATIVE_OPTS` of the executable, or the memory of the ordinary Server |
 | `nacos.native.test.jvm.options` | | `JAVA_TOOL_OPTIONS` of the ordinary Server (mode `jvm`), for a debugger, a class log or the tracing agent. `{name}` is replaced by the name of the Server, so that Servers write to files of their own. The ordinary Server does not run the AOT application, so what it records is no replacement for the trace of `native-trace-server.sh` |
 | `nacos.native.test.timeout.scale` | `1` | A factor for every wait of the tests, for a slow machine or a Server under the tracing agent, which starts several times slower |
@@ -497,13 +484,14 @@ The tests, and what a build must contain for them:
 | `NativeAiRegistryITCase` | the MCP registry, the skill registry and the ARD catalog on port 9080 | `nacos.ai.mcp.registry.enabled`, `nacos.ai.skill.registry.enabled`, `nacos.ai.ard.enabled` |
 | `NativeDnsITCase` | A and SRV records over UDP and TCP, and NXDOMAIN | nothing (`nacos.naming.dns.enabled` is a switch of the run) |
 | `NativeKubernetesSyncITCase` | Services and Endpoints of a k3s become persistent instances, follow changes and disappear | `nacos.k8s.sync.enabled` |
+| `NativeIstioITCase` | the MCP and the xDS stream serve ServiceEntry, cluster, endpoint, listener and route resources of the registered services and push the changes, a VirtualService becomes a route configuration, a DestinationRule is parsed | `nacos.extension.naming.istio.enabled` |
 | `NativeThirdPartyPluginITCase` | a config change plugin from outside the repository is found, run and can be disabled | `test/native-test-plugin` in the plugin directory |
 
 `test/native-test-plugin` is a plugin as a third party would ship it: a services file and the
 reachability metadata of its own in the jar, which a Native build takes from the plugin directory.
 
-Two parts of the Server are not tested, because they fail on the ordinary JVM Server as well, and
-a test of the executable can say nothing about them until they work:
+Oracle is not tested, because it fails on the ordinary JVM Server as well, and a test of the
+executable can say nothing about it until it works:
 
 - Oracle. The schema file of the datasource plugin is not valid for Oracle: `DEFAULT` has to
   precede `NOT NULL` (ORA-03076) and `RESOURCE` is a reserved word (ORA-03050), so six tables are
@@ -512,12 +500,6 @@ a test of the executable can say nothing about them until they work:
   #15979. A namespace cannot be created either, because `TenantInfoMapperByOracle` writes epoch
   milliseconds into the `TIMESTAMP` columns of `tenant_info` (ORA-00932,
   [#16010](https://github.com/alibaba/nacos/issues/16010)).
-- The Istio adaptor. `NacosResourceManager` builds its first snapshot in its constructor, before
-  `IstioConfig` is injected. The first stream of the mesh configuration protocol that connects to
-  a Server whose registry holds a service is answered from that snapshot and ends with a
-  `NullPointerException` of the Server (`ServiceEntryMcpGenerator.generate`); the stream after it
-  works, because the adaptor has replaced the snapshot by then
-  ([#16011](https://github.com/alibaba/nacos/issues/16011)).
 
 ### The Native CI job
 
@@ -532,29 +514,27 @@ tests the executable in three ways, which are the stages `smoke`, `integration` 
   [Test with Testcontainers](#test-with-testcontainers).
 
 What an executable contains is fixed when it is built: the datasource, the switches of the AI
-registries, the Kubernetes sync (a package filter keeps it out of the component scan unless the
-build turns it on), the jars in the plugin directory and the mode, standalone or cluster. So the job is a matrix of scenarios, and every scenario is compiled on its own, in two
-variants: `default` is the build that users get, and `exact` is the diagnostic build above.
+registries, the Kubernetes sync and the Istio adaptor (a package filter keeps each of the two out of
+the component scan unless the build turns it on), the jars in the plugin directory and the mode,
+standalone or cluster. So the job is a matrix of scenarios, and every scenario is compiled on its
+own, in two variants: `default` is the build that users get, and `exact` is the diagnostic build
+above.
 
 | Scenario | The build | Tests |
 | --- | --- | --- |
 | `standard`, with PostgreSQL | the Server as the sample `application.properties` configures it, standalone | every OpenAPI class, the Java SDK and the Maintainer SDK suite |
 | `standard`, with MySQL | the same | the Config, Naming, Core and Auth OpenAPI classes, which is enough to exercise its driver, and the SDK suites |
-| `features` | the three AI registries and the Kubernetes sync switched on, and `test/native-test-plugin` in the plugin directory | the three suites with the registries on, and the tests of the registries, DNS, the Kubernetes sync and the third-party plugin |
+| `features` | the three AI registries, the Kubernetes sync and the Istio adaptor switched on, and `test/native-test-plugin` in the plugin directory | the three suites with the registries on, and the tests of the registries, DNS, the Kubernetes sync, the Istio adaptor and the third-party plugin |
 | `cluster` | cluster mode | a cluster of three nodes that share the database |
 
-- The Java SDK suite runs the classes that need only a single, current Server. The upgrade
-  migration, released-SDK compatibility and Jackson 3 scenarios need other setups and are not part
-  of it. The Maintainer SDK suite runs as its profile defines it.
-- The cluster scenario runs no suites: they are written for a single Server.
+- The Java SDK suite runs the classes that need only a single, current Server; the Maintainer
+  SDK suite runs as its profile defines it. The cluster scenario runs no suites: they are written
+  for a single Server.
 
-The Server is configured like the one in `.github/workflows/it-new.yml`, because the AI suites are
-written for it: anonymous access to the AI APIs, small Remote Agent Discovery capacities and one
-second reconciliation intervals for the MCP cutover and the search index. The features scenario
-sets the catalog base URL of the ARD adaptor as that workflow does. The job also passes
-`-Dnacos.logs.path`, which keeps the log files below the Nacos home: an application that starts
-from AOT output does not apply `-Dlogging.config` and would otherwise log to
-`${user.home}/nacos/logs`.
+The Server is configured like the one in `.github/workflows/it-new.yml` (anonymous access to the
+AI APIs, small RAD capacities, one second reconciliation intervals), and the features scenario
+sets the ARD catalog base URL the same way. The job passes `-Dnacos.logs.path`, because an
+application that starts from AOT output does not apply `-Dlogging.config`.
 
 The Raft snapshot interval is 30 seconds instead of 30 minutes. JRaft takes the first snapshot of
 each group at a random time within the first interval, so a job of twenty minutes would reach the
@@ -569,28 +549,22 @@ report stage fails the job when a step failed or the check did not run, and it s
 every Server of the run for missing registrations.
 
 Tests that fail for a reason that does not depend on the Native executable are listed in
-`test/scripts/native-ci-baseline.txt`; they are reported but do not fail the job. At present these
-are two Config list tests that also fail against the ordinary JVM Server with PostgreSQL. The tests
-that call the ARD adaptor on port 9080 are in `test/scripts/native-ci-baseline-ard-off.txt`, which
-every scenario reads except `features`: the other builds leave the adaptor off, because
-`nacos.ai.ard.enabled` is a structural switch.
+`test/scripts/native-ci-baseline.txt`; they are reported but do not fail the job. The tests that
+call the ARD adaptor on port 9080 are in `test/scripts/native-ci-baseline-ard-off.txt`, which
+every scenario reads except `features`.
 
-The workflow only calls the stages of `test/scripts/native-ci.sh` (`prepare`, `build`, `smoke`,
-`integration`, `scenario`, `report`), so the same stages reproduce a job on any Linux host that has
-GraalVM 25, Maven, Python 3 and Docker. The header of the script lists the variables. With
-`NATIVE_CI_ARCHIVE` set to the archive of the ordinary Server and
-`NATIVE_CI_TEST_OPTIONS=-Dnacos.native.test.mode=jvm`, the stages `smoke`, `integration` and
-`scenario` run without a Native build.
+The workflow only calls the stages of `test/scripts/native-ci.sh`, so the same stages reproduce a
+job on any Linux host that has GraalVM 25, Maven, Python 3 and Docker (see the script header for
+the variables). With `NATIVE_CI_ARCHIVE` set to the archive of the ordinary Server and
+`NATIVE_CI_TEST_OPTIONS=-Dnacos.native.test.mode=jvm`, the test stages run without a Native build.
 
-The job installs GraalVM Community 25.0.4 (graal 25.2.4) with `version: '25.2'` of
-`graalvm/setup-graalvm`. GraalVM Community ships as numbered innovation releases now, and a
-`java-version` of `'25'` alone resolves to 25.0.2, the last `jdk-25.*` release.
+The job installs GraalVM Community 25.0.4 with `version: '25.2'` of `graalvm/setup-graalvm` (a
+`java-version` of `'25'` alone resolves to 25.0.2).
 
-On a GitHub-hosted runner with 4 vCPUs and GraalVM CE 25.2.4, the compilation takes between four
-and six minutes and peaks at about 11.5 GB of resident memory with a 10 GB builder heap, so the job
-uses GitHub-hosted runners instead of the self-hosted ones of the other Java checks. The executable
-is 288 MB, or 253 MB without the reachability metadata repository. The Server answers its liveness
-check about 1.5 to 2 seconds after it starts and holds about 470 MB after the suites.
+On a GitHub-hosted runner the compilation takes between four and six minutes and peaks at about
+11.5 GB of resident memory, so the job uses GitHub-hosted runners instead of the self-hosted ones
+of the other Java checks. The executable is 288 MB, or 253 MB without the reachability metadata
+repository.
 
 The job runs for pull requests that touch the Native build or the tests of `test/native-test` and
 on demand. To run it on a fork without opening a pull request, push a branch named
