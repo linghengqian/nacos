@@ -50,6 +50,12 @@ case "$SCENARIO" in
         exit 2
         ;;
 esac
+# Only on a branch that iterates on one scenario: a scenario that the file does not list ends at once.
+ONLY_FILE="${ROOT}/test/scripts/native-ci-only.txt"
+if [ -f "$ONLY_FILE" ] && ! grep -qx "$SCENARIO" "$ONLY_FILE"; then
+    echo "native-ci-only.txt does not list the scenario ${SCENARIO}: nothing to do"
+    exit 0
+fi
 case "$DATABASE" in
     postgresql | mysql | oracle) ;;
     *)
