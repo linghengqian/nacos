@@ -97,7 +97,7 @@ plugin, JDBC driver, or Spring configuration.
 | `nacos.native.embedded-storage` | `false` | Explicit embedded storage selection |
 | `nacos.native.plugins` | `bootstrap/target/native-plugins` | Additional plugin/driver JAR directory |
 | `nacos.native.oracle.driver` | unset | Version of `ojdbc8` that the build adds as a dependency, for Oracle as the datasource, see [What it covers](#what-it-covers) |
-| `nacos.native.metadata` | `bootstrap/target/native-metadata` | Additional exercised Native metadata directory |
+| `nacos.native.metadata` | `bootstrap/target/native-metadata`, or `bootstrap/src/main/native/oracle-metadata` with `nacos.native.oracle.driver` | Additional exercised Native metadata directory |
 | `nacos.native.derby.experimental` | `false` | Explicit opt-in to the experimental Derby arguments below |
 | `nacos.native.repository.enabled` | `true` | Adds the [GraalVM reachability metadata repository](#the-graalvm-reachability-metadata-repository) to the Native classpath; `false` leaves it out and the executable about 35 MB smaller |
 | `nacos.native.options` | empty | Path of a Native Image argument file appended after the toolchain options, for example `--exact-reachability-metadata` for [diagnostic builds](#find-gaps-with-an-exact-mode-build) or `-march=compatibility` for an executable that must run on older CPUs |
@@ -268,13 +268,19 @@ is selected by the artifacts that Maven resolves for the module, and a driver in
 directory would be on the classpath without any, so that the build depends on that repository
 (`nacos.native.repository.enabled` stays `true`). The repository has metadata for `ojdbc8`
 23.26.1.0.0 and nothing for 19.7.0.0, the version that the root pom manages for compiling the
-plugin, so the version has to be one that the repository covers. The classes of the datasource
-plugin need no entries of their own, because the SPI manifest of the AOT output lists its dialect
-and its mappers. `NativeOracleITCase` validates it with `ojdbc8` 23.26.1.0.0 in the `oracle`
-scenario of the [Native CI job](#the-native-ci-job), on a Native executable of the build that users
-get and on one with `--exact-reachability-metadata`, against Oracle Database Free 23 in a
-container: the storage of configurations and of their history, gray configurations, the paging of
-lists and namespaces, with authentication switched off (`nacos.core.auth.enabled`,
+plugin, so the version has to be one that the repository covers. Its metadata for 23.26.1.0.0 lacks
+four resources, the character sets that the driver loads when it creates its first statement
+(`DynamicByteArray` loads five converters and the repository lists one): without them a Native
+Server stops at its first statement with a `NullPointerException` in the initializer of that class.
+They are in `bootstrap/src/main/native/oracle-metadata/reachability-metadata.json`, and the profile
+makes that directory the default of `nacos.native.metadata`, so a build that sets the property
+itself has to carry the file. The classes of the datasource plugin need no entries of their own,
+because the SPI manifest of the AOT output lists its dialect and its mappers. `NativeOracleITCase`
+validates it with `ojdbc8` 23.26.1.0.0 in the `oracle` scenario of the
+[Native CI job](#the-native-ci-job), on a Native executable of the build that users get and on one
+with `--exact-reachability-metadata`, against Oracle Database Free 23 in a container: the storage
+of configurations and of their history, gray configurations, the paging of lists and namespaces,
+with authentication switched off (`nacos.core.auth.enabled`,
 `nacos.core.auth.admin.enabled` and `nacos.core.auth.console.enabled` set to `false`).
 
 Authentication is left out, and that is not a matter of the executable: the ordinary JVM Server has
