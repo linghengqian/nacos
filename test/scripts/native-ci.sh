@@ -34,6 +34,7 @@
 
 set -euo pipefail
 
+SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 WORK="${NATIVE_CI_WORK:-${RUNNER_TEMP:-/tmp}/native-ci}"
 OUT="${NATIVE_CI_OUT:-${ROOT}/target/ci-out}"
@@ -69,6 +70,7 @@ ENVIRONMENT_DIR="${WORK}/environment"
 # Where NativeEnvironmentMain puts the home of its Server and the database log.
 NACOS_HOME="${ENVIRONMENT_DIR}/environment/nacos"
 METADATA_TOOL="${ROOT}/test/scripts/native-metadata.py"
+REPORT_TOOL="${ROOT}/test/scripts/native-ci-report.py"
 
 # The OpenAPI classes of the 'core' suite.
 CORE_OPENAPI_CLASSES="ConfigAdminApiOpenApiITCase,ConfigConsoleApiOpenApiITCase,ConfigOpenApiITCase"
@@ -135,9 +137,18 @@ stage_prepare() {
 
     log "Native CI: scenario=${SCENARIO} database=${DATABASE} variant=${VARIANT} suite=${SUITE}"
 
+    # A run starts from nothing. Reports and logs that an earlier run left in the same workspace would
+    # be taken for the results of this one, and the report stage would pass a stage that never ran.
+    rm -rf "$ROOT"/test/*/target/failsafe-reports "$OUT/reports" "$OUT/logs" \
+        "$OUT/missing-registrations" "$WORK/native-test" "$ENVIRONMENT_DIR"
+    mkdir -p "$OUT/reports" "$OUT/logs"
+
     log "Check the bundled Native metadata"
     python3 -I "$METADATA_TOOL" selftest
     python3 -I "$METADATA_TOOL" check
+
+    log "Check the tool that judges the reports"
+    python3 -I "$REPORT_TOOL" selftest
 
     # The scenario decides the structure of the build and the tests that run on it. The AI registries
     # are checked when a Server starts, so every Server of the run repeats their switches. The
@@ -441,61 +452,22 @@ stage_report() {
 
     log "Integration test results"
     local status=0
-    local baselines=("$ROOT/test/scripts/native-ci-baseline.txt")
+    local baselines=(--baseline "$ROOT/test/scripts/native-ci-baseline.txt")
     if [ "$SCENARIO" != "features" ]; then
-        baselines+=("$ROOT/test/scripts/native-ci-baseline-ard-off.txt")
+        baselines+=(--baseline "$ROOT/test/scripts/native-ci-baseline-ard-off.txt")
     fi
-    python3 -I - "$ROOT" "${baselines[@]}" <<'PY' || status=1
-import fnmatch
-import glob
-import sys
-import xml.etree.ElementTree as ET
-
-root, baseline_files = sys.argv[1], sys.argv[2:]
-baseline = [line.strip() for baseline_file in baseline_files for line in open(baseline_file)
-            if line.strip() and not line.startswith("#")]
-executed, failed = 0, []
-for report in sorted(glob.glob(root + "/test/*/target/failsafe-reports/TEST-*.xml")):
-    for case in ET.parse(report).getroot().iter("testcase"):
-        if case.find("skipped") is not None:
-            continue
-        executed += 1
-        name = case.get("classname").split(".")[-1] + "." + case.get("name")
-        for kind in ("failure", "error"):
-            item = case.find(kind)
-            if item is not None:
-                failed.append((name, (item.get("message") or "").replace("\n", " ")[:200]))
-known = [f for f in failed if any(fnmatch.fnmatch(f[0], p) for p in baseline)]
-new = [f for f in failed if f not in known]
-print("%d tests executed, %d failed (%d are known failures of the JVM server in this setup)"
-      % (executed, len(failed), len(known)))
-by_class = {}
-for name, message in new:
-    by_class.setdefault(name.split(".")[0], []).append((name, message))
-for test_class, items in sorted(by_class.items()):
-    print("NEW FAILURES in %s: %d" % (test_class, len(items)))
-    for name, message in items[:3]:
-        print("    %s: %s" % (name, message))
-sys.exit(1 if executed == 0 or new else 0)
-PY
-
-    log "Restart check"
-    local restart_report="$OUT/reports/restart-check.txt"
-    if [ -f "$restart_report" ]; then
-        cat "$restart_report"
-        # The check is done when its last step passed; a report that stops earlier is a failure too.
-        if ! grep -q '^PASS  data after the restart' "$restart_report" \
-            || grep -q '^FAIL' "$restart_report"; then
-            status=1
-        fi
-    elif [ "$RUN_SUITES" = "true" ]; then
-        # The environment writes the report before it ends, so a missing one means that it ended
-        # in the middle of the check.
-        echo "The restart check did not run" >&2
-        status=1
-    else
-        echo "The ${SCENARIO} scenario runs no suites, so it has no restart check"
+    # Everything that the scenario has to run must have reported. A stage that fails before it writes a
+    # report leaves none behind, so the reports of the other stages cannot stand in for it.
+    local native_tests="$SMOKE_TESTS"
+    if [ -n "$SCENARIO_TESTS" ]; then
+        native_tests="${native_tests:+${native_tests},}${SCENARIO_TESTS}"
     fi
+    local expected=(--native "$native_tests")
+    if [ "$RUN_SUITES" = "true" ]; then
+        expected+=(--suites --suite "$SUITE" --core-openapi "$CORE_OPENAPI_CLASSES"
+            --java-sdk "$JAVA_SDK_CLASSES" --restart-report "$OUT/reports/restart-check.txt")
+    fi
+    python3 -I "$REPORT_TOOL" judge --root "$ROOT" "${baselines[@]}" "${expected[@]}" || status=1
 
     log "Missing registrations reported by the Native executable"
     # Every Server of the run, and the first run of the Servers that were restarted: a restart
@@ -546,12 +518,23 @@ case "${1:-}" in
     scenario) stage_scenario ;;
     report) stage_report ;;
     all)
-        stage_prepare
-        stage_build
-        stage_smoke
-        stage_integration || true
-        stage_scenario || true
-        stage_report
+        # The stages of the workflow, one process each. A stage that fails does not keep the later ones
+        # from running, because the report collects what they leave, but the run fails if any stage
+        # did. Only the stages of the tests run after a failed build, as in the workflow.
+        failed=()
+        bash "$SELF" prepare || exit 1
+        if bash "$SELF" build; then
+            for stage in smoke integration scenario; do
+                bash "$SELF" "$stage" || failed+=("$stage")
+            done
+        else
+            failed+=(build)
+        fi
+        bash "$SELF" report || failed+=(report)
+        if [ "${#failed[@]}" -gt 0 ]; then
+            echo "Failed stages: ${failed[*]}" >&2
+            exit 1
+        fi
         ;;
     *)
         echo "Usage: $0 <prepare|build|smoke|integration|scenario|report|all>" >&2
