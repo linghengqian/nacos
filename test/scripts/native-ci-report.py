@@ -35,9 +35,9 @@ import sys
 import tempfile
 import xml.etree.ElementTree as ET
 
-# The steps that the restart check has to report as passed, in this order. A report that stops
-# early, or that lacks the step of the snapshots, fails the run: without the snapshots the data may
-# come back through the replay of the Raft log, and nothing is learned about loading a snapshot.
+# The steps that the restart check has to report as passed. A report that stops early, or that lacks
+# the steps of the snapshots, fails the run: without them the data may come back through the replay
+# of the Raft log, and nothing is learned about loading a snapshot.
 RESTART_STEPS = (
     "seed",
     "snapshots saved after the seed",
