@@ -130,6 +130,18 @@ find_archive() {
     echo "$archive"
 }
 
+# test/scripts/native-ci-archive-only.txt names the one job of the matrix that builds the Native distribution on
+# this branch, and keeps its archive in the diagnostics without running a test. The other jobs do nothing.
+stage_disabled() {
+    local stage="$1"
+    if [ "${SKIP_RUN:-false}" = "true" ] \
+        || { [ "${BUILD_ONLY:-false}" = "true" ] && [ "$stage" != "build" ]; }; then
+        log "The stage ${stage} is skipped on this branch, see native-ci-archive-only.txt"
+        return 0
+    fi
+    return 1
+}
+
 stage_prepare() {
     mkdir -p "$WORK" "$OUT"
     : > "$STATE"
@@ -223,10 +235,22 @@ stage_prepare() {
             exit 2
             ;;
     esac
+
+    local only="${ROOT}/test/scripts/native-ci-archive-only.txt"
+    if [ -f "$only" ]; then
+        if [ "$(tr -d '[:space:]' < "$only")" = "${SCENARIO}/${DATABASE}/${VARIANT}" ]; then
+            log "This job builds the Native distribution and keeps its archive"
+            remember BUILD_ONLY true
+        else
+            log "This job is not the one of native-ci-archive-only.txt"
+            remember SKIP_RUN true
+        fi
+    fi
 }
 
 stage_build() {
     load_state
+    stage_disabled build && return 0
 
     log "Install the JVM artifacts that the test modules resolve"
     # The Java SDK suite needs the shaded client, which only release-nacos produces.
@@ -274,6 +298,10 @@ stage_build() {
     mkdir -p "$OUT/build"
     cp "$ROOT"/bootstrap/target/native/{options.args,classpath.args,aot-manifest.properties,build.properties} \
         "$OUT/build/"
+    if [ "${BUILD_ONLY:-false}" = "true" ]; then
+        log "Keep the archive in the diagnostics"
+        cp "$(find_archive)" "$OUT/build/"
+    fi
 
     log "Resolve the classpath of the test environment"
     "$MVN" -B -q -pl test/native-test dependency:build-classpath \
@@ -308,6 +336,7 @@ run_native_tests() {
 
 stage_smoke() {
     load_state
+    stage_disabled smoke && return 0
     if [ -z "$SMOKE_TESTS" ]; then
         log "The ${SCENARIO} scenario has no smoke test"
         return 0
@@ -318,6 +347,7 @@ stage_smoke() {
 
 stage_scenario() {
     load_state
+    stage_disabled scenario && return 0
     if [ -z "$SCENARIO_TESTS" ]; then
         log "The ${SCENARIO} scenario has no tests of its own"
         return 0
@@ -343,6 +373,7 @@ run_suite() {
 
 stage_integration() {
     load_state
+    stage_disabled integration && return 0
     if [ "$RUN_SUITES" != "true" ]; then
         log "The ${SCENARIO} scenario runs no suites"
         return 0
@@ -432,6 +463,7 @@ stage_integration() {
 
 stage_report() {
     load_state
+    stage_disabled report && return 0
     mkdir -p "$OUT/logs" "$OUT/reports"
     # The logs of every Server that the run started, one directory each, and of its database.
     local logs_dir database_log name
