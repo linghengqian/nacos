@@ -18,6 +18,7 @@ package com.alibaba.nacos.test.nativeimage;
 
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -34,9 +35,16 @@ import java.util.Map;
  *   <li>a configuration, which the datasource keeps.</li>
  * </ul>
  *
- * <p>A snapshot of the data has to exist before the restart, so that the Raft groups load a
- * snapshot and replay the log behind it. The environment asks JRaft for one every 30 seconds.
- * The check does not throw for a failed step: it returns one line per step, {@code PASS} or
+ * <p>The restart has to load the data from snapshots, not replay it from the Raft log, because
+ * loading a snapshot is the code that the check exists to reach. Reading the data back proves
+ * neither, so the check looks at the snapshots themselves. Before the restart it waits until the
+ * newest snapshot of every Raft group that the seed wrote holds the seed, which the environment lets
+ * JRaft take every 30 seconds. After the restart it looks in the logs for each of these groups
+ * loading exactly that snapshot, and for the persistent service among the services that the
+ * persistent naming group read from it. A snapshot that was taken before the seed, or none, fails
+ * the check, as does a restart that replays the log.
+ *
+ * <p>The check does not throw for a failed step: it returns one line per step, {@code PASS} or
  * {@code FAIL}, as {@code native-ci.sh} reported them.
  *
  * @author Nacos
@@ -63,6 +71,19 @@ public final class NativeRestartCheck {
     private static final String LABEL_SELECTOR = "\"labels\"\\s*:\\s*\\[\\s*\"zone\"\\s*\\]";
 
     private static final String MYSQL_CHECKER = "\"type\"\\s*:\\s*\"MYSQL\"";
+
+    /**
+     * The Raft groups that the seed writes, each with a text that the snapshot of the group holds
+     * once it holds the seed: the persistent instance, the metadata of the service and the switch.
+     * The groups of the instance metadata and of the locks get nothing from the seed.
+     */
+    private static final Map<String, String> SEEDED_GROUPS = new LinkedHashMap<>();
+
+    static {
+        SEEDED_GROUPS.put("naming_persistent_service_v2", SERVICE);
+        SEEDED_GROUPS.put("naming_service_metadata", SERVICE);
+        SEEDED_GROUPS.put("naming_persistent_service", "\"" + SWITCH_ENTRY + "\":" + SWITCH_VALUE);
+    }
 
     private final NativeHttp http = new NativeHttp();
 
@@ -117,12 +138,14 @@ public final class NativeRestartCheck {
         }
         record(true, "seed");
 
-        // JRaft saves a snapshot of each group at an interval between 30 and 60 seconds here. Wait
-        // for the first one instead of a fixed time, so that the data is in a snapshot that the
-        // restart loads.
-        long savedBefore = server.snapshotsSaved();
-        if (!awaitSnapshot(server, savedBefore)) {
-            record(false, "no Raft snapshot was saved in time");
+        // JRaft takes a snapshot of each group every 30 seconds here, and none of them has to hold
+        // the seed: one that was taken before it lacks it. Wait until the newest snapshot of every
+        // group that the seed wrote holds it, so that the restart has to load the seed.
+        NativeRaftSnapshots snapshots = new NativeRaftSnapshots(server.raftDirectory());
+        List<String> without = awaitSnapshots(snapshots);
+        if (!without.isEmpty()) {
+            record(false, "snapshots saved after the seed: no snapshot holds the seed of "
+                    + String.join(", ", without));
             return;
         }
 
@@ -131,6 +154,10 @@ public final class NativeRestartCheck {
         } else {
             record(false, "stop: the Server ignored SIGTERM for 60 seconds");
         }
+        // The Server is down, so no snapshot is taken any more: these are the ones that it loads.
+        Map<String, Long> expected = newestIndexes(snapshots);
+        record(true, "snapshots saved after the seed: " + describe(expected, "snapshot_"));
+        String logsBefore = server.allLogs();
         try {
             server.restart();
         } catch (RuntimeException e) {
@@ -138,6 +165,13 @@ public final class NativeRestartCheck {
             return;
         }
         record(true, "start after the restart");
+
+        failures = verifyRecovery(logsBefore, server.allLogs(), expected);
+        if (failures.isEmpty()) {
+            record(true, "snapshots loaded by the restart: " + describe(expected, "snapshot_"));
+        } else {
+            record(false, "snapshots loaded by the restart: " + String.join("; ", failures));
+        }
 
         String restarted = environment.identities().adminToken();
         failures = verify(restarted);
@@ -259,24 +293,77 @@ public final class NativeRestartCheck {
     }
 
     /**
-     * Waits until the Server saves a Raft snapshot after the seed, so the restart loads one.
+     * Waits until the newest snapshot of every group that the seed wrote holds the seed. A snapshot
+     * directory exists only once its snapshot is complete, and the content tells whether it was taken
+     * after the seed, so this depends neither on when JRaft takes its snapshots nor on what the logs
+     * say about them.
      *
-     * @param server the Server of the environment
-     * @param savedBefore the snapshots saved before the seed
-     * @return true if a new snapshot was saved
+     * @param snapshots the snapshots of the Server
+     * @return the groups whose newest snapshot does not hold the seed at the end, empty if all do
      */
-    private static boolean awaitSnapshot(NativeServer server, long savedBefore) {
+    private static List<String> awaitSnapshots(NativeRaftSnapshots snapshots) {
         long deadline = System.nanoTime()
                 + NativeTestSettings.scaled(Duration.ofMinutes(3)).toNanos();
-        while (System.nanoTime() < deadline) {
-            long saved = server.snapshotsSaved();
-            if (saved > savedBefore) {
-                System.out.println("Snapshots saved while waiting: " + (saved - savedBefore));
-                return true;
+        List<String> without = new ArrayList<>();
+        while (true) {
+            without.clear();
+            for (Map.Entry<String, String> group : SEEDED_GROUPS.entrySet()) {
+                if (!snapshots.holds(group.getKey(), group.getValue())) {
+                    without.add(group.getKey());
+                }
+            }
+            if (without.isEmpty() || System.nanoTime() >= deadline) {
+                return without;
             }
             sleep(2000);
         }
-        return false;
+    }
+
+    private static Map<String, Long> newestIndexes(NativeRaftSnapshots snapshots) {
+        Map<String, Long> indexes = new LinkedHashMap<>();
+        for (String group : SEEDED_GROUPS.keySet()) {
+            indexes.put(group, snapshots.newestIndex(group).orElse(-1));
+        }
+        return indexes;
+    }
+
+    private static String describe(Map<String, Long> indexes, String prefix) {
+        List<String> parts = new ArrayList<>();
+        indexes.forEach((group, index) -> parts.add(group + "=" + prefix + index));
+        return String.join(", ", parts);
+    }
+
+    /**
+     * Looks in the logs for what the restart loaded. The groups log {@code onSnapshotLoadDone} with
+     * the index of the snapshot that they loaded, and the persistent naming group logs each service
+     * that it reads from its snapshot; a replayed log entry is logged by none of them.
+     *
+     * @param logsBefore the logs before the restart
+     * @param logsAfter  the logs after it
+     * @param expected   the index of the newest snapshot of each group, which the group has to load
+     * @return what is missing, empty if every group loaded its newest snapshot
+     */
+    private static List<String> verifyRecovery(String logsBefore, String logsAfter,
+            Map<String, Long> expected) {
+        List<String> failures = new ArrayList<>();
+        Map<String, List<Long>> before = NativeRaftSnapshots.loaded(logsBefore);
+        Map<String, List<Long>> after = NativeRaftSnapshots.loaded(logsAfter);
+        for (Map.Entry<String, Long> group : expected.entrySet()) {
+            List<Long> loadedBefore = before.getOrDefault(group.getKey(), List.of());
+            List<Long> loadedAfter = after.getOrDefault(group.getKey(), List.of());
+            List<Long> loaded = loadedAfter.subList(Math.min(loadedBefore.size(), loadedAfter.size()),
+                    loadedAfter.size());
+            if (!loaded.contains(group.getValue())) {
+                failures.add(group.getKey() + " did not load snapshot_" + group.getValue()
+                        + (loaded.isEmpty() ? ", it loaded no snapshot" : ", it loaded " + loaded));
+            }
+        }
+        if (NativeRaftSnapshots.servicesLoaded(logsAfter, SERVICE)
+                <= NativeRaftSnapshots.servicesLoaded(logsBefore, SERVICE)) {
+            failures.add("naming_persistent_service_v2 did not read the service " + SERVICE
+                    + " from its snapshot");
+        }
+        return failures;
     }
 
     private static void sleep(long millis) {

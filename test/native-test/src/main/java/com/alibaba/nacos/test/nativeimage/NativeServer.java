@@ -485,13 +485,13 @@ public final class NativeServer implements AutoCloseable {
     }
 
     /**
-     * How often the Raft groups saved a snapshot since the start.
+     * The directory below the home where the Raft groups keep their log, their meta data and their
+     * snapshots.
      *
-     * @return the number of log lines that report a saved snapshot
+     * @return {@code <home>/data/protocol/raft}
      */
-    public long snapshotsSaved() {
-        return allLogs().lines().filter(line -> line.contains("SnapshotOperation.SAVE cost time"))
-                .count();
+    Path raftDirectory() {
+        return home.resolve("data").resolve("protocol").resolve("raft");
     }
 
     /**
