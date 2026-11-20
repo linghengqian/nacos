@@ -52,7 +52,7 @@ public abstract class NativeDatabase implements AutoCloseable {
     /**
      * Creates the database of a platform.
      *
-     * @param platform {@code mysql}, {@code postgresql} or {@code oracle}
+     * @param platform {@code mysql}, {@code postgresql}, {@code oracle} or {@code h2}
      * @return a database that is not started yet
      */
     public static NativeDatabase of(String platform) {
@@ -63,6 +63,8 @@ public abstract class NativeDatabase implements AutoCloseable {
                 return new Postgresql();
             case "oracle":
                 return new Oracle();
+            case "h2":
+                return new Embedded();
             default:
                 throw new IllegalArgumentException("Unknown database: " + platform);
         }
@@ -337,6 +339,56 @@ public abstract class NativeDatabase implements AutoCloseable {
         @Override
         String jdbcUrl(String host, int port) {
             return "jdbc:oracle:thin:@//" + host + ':' + port + '/' + DATABASE;
+        }
+    }
+
+    /**
+     * The H2 database of a standalone Server. H2 is embedded in the Server and keeps its file below the
+     * home, so there is no container to start and no schema for the test to apply: the Server creates
+     * its tables when it starts.
+     */
+    private static final class Embedded extends NativeDatabase {
+
+        @Override
+        public String platform() {
+            return "h2";
+        }
+
+        @Override
+        public void start() {
+            // Nothing runs outside the Server.
+        }
+
+        @Override
+        public Map<String, String> serverProperties() {
+            Map<String, String> properties = new LinkedHashMap<>();
+            properties.put("spring.sql.init.platform", platform());
+            return properties;
+        }
+
+        @Override
+        JdbcDatabaseContainer<?> createContainer() {
+            throw new UnsupportedOperationException("The H2 database has no container");
+        }
+
+        @Override
+        String schemaFile() {
+            throw new UnsupportedOperationException("The H2 database applies no schema file");
+        }
+
+        @Override
+        ExecResult applySchema(JdbcDatabaseContainer<?> started) {
+            throw new UnsupportedOperationException("The H2 database applies no schema file");
+        }
+
+        @Override
+        int port() {
+            return 0;
+        }
+
+        @Override
+        String jdbcUrl(String host, int port) {
+            throw new UnsupportedOperationException("The Server sets the H2 database URL itself");
         }
     }
 }

@@ -20,7 +20,7 @@
 # Environment (all optional):
 #   NATIVE_CI_SCENARIO      standard | features | cluster | istio | oracle, default standard
 #   NATIVE_CI_VARIANT       default | exact, default default
-#   NATIVE_CI_DATABASE      postgresql | mysql | oracle, default postgresql
+#   NATIVE_CI_DATABASE      postgresql | mysql | oracle | h2, default postgresql
 #   NATIVE_CI_SUITE         full | core, default full
 #   NATIVE_CI_ORACLE_DRIVER version of ojdbc8 for the oracle scenario, default 23.26.1.0.0
 #   NATIVE_CI_ARCHIVE       distribution archive, default the Native one in distribution/target
@@ -52,7 +52,7 @@ case "$SCENARIO" in
         ;;
 esac
 case "$DATABASE" in
-    postgresql | mysql | oracle) ;;
+    postgresql | mysql | oracle | h2) ;;
     *)
         echo "Unknown database: ${DATABASE}" >&2
         exit 2
