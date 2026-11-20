@@ -257,7 +257,12 @@ stage_build() {
     esac
 
     log "Build the Native distribution"
-    "$MVN" -B '-Pnative,release-native,!dev' -pl distribution -am clean package \
+    # The H2 scenario builds the Native Image with the opt-in native-h2 profile; the other scenarios never carry H2.
+    local native_profiles="native,release-native,!dev"
+    if [ "$DATABASE" = "h2" ]; then
+        native_profiles+=",native-h2"
+    fi
+    "$MVN" -B "-P${native_profiles}" -pl distribution -am clean package \
         -Dmaven.test.skip=true -Drat.skip=true \
         -Dnacos.native.config="${WORK}/build.properties" \
         -Dnacos.native.standalone="${NATIVE_STANDALONE}" \
