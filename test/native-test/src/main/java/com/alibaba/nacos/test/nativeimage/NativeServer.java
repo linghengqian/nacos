@@ -59,6 +59,13 @@ public final class NativeServer implements AutoCloseable {
 
     private static final Duration LIVE_TIMEOUT = Duration.ofSeconds(180);
 
+    /**
+     * How long a Server may be missing from the process table after its launcher has returned.
+     * The launcher starts the Server in the background and returns at once, so for a moment the
+     * shell that it forked may still stand where the Server will be.
+     */
+    private static final Duration PROCESS_GRACE = Duration.ofSeconds(10);
+
     private static final Duration STOP_TIMEOUT = Duration.ofSeconds(60);
 
     private final String name;
@@ -528,13 +535,16 @@ public final class NativeServer implements AutoCloseable {
 
     private void awaitLive() {
         Duration liveTimeout = NativeTestSettings.scaled(LIVE_TIMEOUT);
-        long deadline = System.nanoTime() + liveTimeout.toNanos();
+        long start = System.nanoTime();
+        long deadline = start + liveTimeout.toNanos();
+        long graceEnd = start + processGrace().toNanos();
         NativeHttp http = new NativeHttp();
         while (System.nanoTime() < deadline) {
             if (http.get(consoleUrl() + "/v3/console/health/liveness", null).status() == 200) {
                 return;
             }
-            if (process().isEmpty()) {
+            // A missing process counts as an ended Server only after the grace period.
+            if (System.nanoTime() >= graceEnd && process().isEmpty()) {
                 throw new IllegalStateException(name + " ended while it started:\n"
                         + tail(startupLog(), 200));
             }
@@ -542,6 +552,10 @@ public final class NativeServer implements AutoCloseable {
         }
         throw new IllegalStateException(name + " is not live after " + liveTimeout.toSeconds()
                 + " s:\n" + tail(startupLog(), 200));
+    }
+
+    private static Duration processGrace() {
+        return NativeTestSettings.scaled(PROCESS_GRACE);
     }
 
     private void assertPortsFree() {
