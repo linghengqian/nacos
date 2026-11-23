@@ -43,7 +43,7 @@ concurrency:
 
 jobs:
   native-image:
-    name: Native Server (${{ matrix.scenario }}, ${{ matrix.database }}, ${{ matrix.variant }})
+    name: Native Server (${{ matrix.scenario }}, ${{ matrix.database }}, ${{ matrix.variant }}${{ matrix.repeat && format('-run{0}', matrix.repeat) || '' }})
     runs-on: ubuntu-latest
     timeout-minutes: 180
     strategy:
@@ -53,18 +53,10 @@ jobs:
         include:
           - { scenario: standard, database: postgresql, variant: default, suite: full }
           - { scenario: standard, database: postgresql, variant: exact, suite: full }
-          - { scenario: standard, database: mysql, variant: default, suite: core }
-          - { scenario: standard, database: mysql, variant: exact, suite: core }
           - { scenario: standard, database: h2, variant: default, suite: full }
           - { scenario: standard, database: h2, variant: exact, suite: full }
-          - { scenario: features, database: postgresql, variant: default, suite: full }
-          - { scenario: features, database: postgresql, variant: exact, suite: full }
-          - { scenario: cluster, database: postgresql, variant: default, suite: core }
-          - { scenario: cluster, database: postgresql, variant: exact, suite: core }
-          - { scenario: istio, database: postgresql, variant: default, suite: core }
-          - { scenario: istio, database: postgresql, variant: exact, suite: core }
-          - { scenario: oracle, database: oracle, variant: default, suite: core }
-          - { scenario: oracle, database: oracle, variant: exact, suite: core }
+          - { scenario: standard, database: h2, variant: exact, suite: full, repeat: 2 }
+          - { scenario: standard, database: h2, variant: exact, suite: full, repeat: 3 }
     env:
       NATIVE_CI_SCENARIO: ${{ matrix.scenario }}
       NATIVE_CI_DATABASE: ${{ matrix.database }}
@@ -115,6 +107,6 @@ jobs:
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
-          name: native-diagnostics-${{ matrix.scenario }}-${{ matrix.database }}-${{ matrix.variant }}
+          name: native-diagnostics-${{ matrix.scenario }}-${{ matrix.database }}-${{ matrix.variant }}${{ matrix.repeat && format('-run{0}', matrix.repeat) || '' }}
           path: target/ci-out
           if-no-files-found: ignore

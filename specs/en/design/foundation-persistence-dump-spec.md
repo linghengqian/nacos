@@ -155,7 +155,7 @@ engine.
 | Derby-only operations | Derby ops query and import check that the active datasource is the embedded Derby engine. The CP snapshot reopen path (`cleanAndReopenDerby`, `restoreDerby`) requires Derby. Both reject `h2`. |
 | Migration | No automatic Derby-to-H2 migration. A server that switches engines starts from a new H2 database that holds only the schema and the server's own startup records. Derby data is left untouched. |
 | Backup | Stop the server, then copy `data/h2-data` as one directory. |
-| Native Image | This contract makes no Native Image claim. H2 joins the Native scope only after the embedded storage validation harness passes. |
+| Native Image | The Native Image carries H2 only when it is built with the `native-h2` profile of `bootstrap`; the default Native Image does not carry H2. A Native Image with H2 follows the same contract as the JVM server. |
 
 ## 4. Repository Contract
 

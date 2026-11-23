@@ -131,7 +131,7 @@ Nacos 支持两类存储模式：
 | 仅 Derby 的操作 | Derby ops 的查询与导入会检查活动数据源是否为嵌入式 Derby 引擎；CP 快照的 reopen 路径（`cleanAndReopenDerby`、`restoreDerby`）要求 Derby。两者在 `h2` 下都会被拒绝。 |
 | 迁移 | 不提供 Derby 到 H2 的自动迁移。切换引擎的服务器从新的 H2 数据库开始，其中只有 schema 和服务器自身启动时写入的记录，Derby 数据保持不动。 |
 | 备份 | 停止服务器后，将 `data/h2-data` 作为一个目录整体复制。 |
-| Native Image | 本契约不声明 Native Image 支持。H2 只有在嵌入式存储验证 harness 通过后才会进入 Native 支持范围。 |
+| Native Image | 只有使用 `bootstrap` 的 `native-h2` profile 构建的 Native Image 才包含 H2，默认的 Native Image 不包含 H2。包含 H2 的 Native Image 遵循与 JVM 服务端相同的契约。 |
 
 ## 4. Repository 契约
 
