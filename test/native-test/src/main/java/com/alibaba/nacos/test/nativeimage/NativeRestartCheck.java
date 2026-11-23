@@ -18,9 +18,12 @@ package com.alibaba.nacos.test.nativeimage;
 
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Data that has to survive a restart of the Server. The integration suites never restart the
@@ -32,7 +35,9 @@ import java.util.Map;
  *   their snapshots and read both back when the Server starts. The Server answers the service
  *   detail with the selector and the checker, which Jackson writes.</li>
  *   <li>a naming switch that the Raft group replicates. The suites set switches in memory only.</li>
- *   <li>a configuration, which the datasource keeps.</li>
+ *   <li>a configuration that is published twice, which the datasource keeps together with its
+ *   history: an insert row and an update row. The check reads every history row, with its detail,
+ *   before the restart and again after it, and the two have to be the same.</li>
  * </ul>
  *
  * <p>The restart has to load the data from snapshots, not replay it from the Raft log, because
@@ -58,6 +63,21 @@ public final class NativeRestartCheck {
     private static final String CLUSTER = "DB";
 
     private static final String DATA_ID = "native-restart-config";
+
+    private static final String UPDATED_CONTENT = "restart=updated";
+
+    private static final String CONFIG_QUERY = "dataId=" + DATA_ID + "&groupName=" + GROUP
+            + "&namespaceId=public";
+
+    /** The id of a history row in the list answer; it is the nid that the detail takes. */
+    private static final Pattern HISTORY_ID = Pattern.compile("\"id\"\\s*:\\s*\"(\\d+)\"");
+
+    /** The operation of a history row. Some databases pad the CHAR column, so blanks are skipped. */
+    private static final Pattern HISTORY_OPERATION =
+            Pattern.compile("\"opType\"\\s*:\\s*\"\\s*([A-Z])\\s*\"");
+
+    private static final Pattern HISTORY_CONTENT =
+            Pattern.compile("\"content\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"");
 
     private static final String SWITCH_ENTRY = "defaultCacheMillis";
 
@@ -100,6 +120,19 @@ public final class NativeRestartCheck {
     private final String probeUser;
 
     private final String probePwd;
+
+    /** The history rows that the seed produced, as the Server answered before the restart. */
+    private List<HistoryRow> historyBefore = List.of();
+
+    /**
+     * A row of the history of the configuration.
+     *
+     * @param nid       the id of the row
+     * @param operation {@code I}, {@code U} or {@code D}
+     * @param content   the content that the row holds
+     */
+    private record HistoryRow(String nid, String operation, String content) {
+    }
 
     private NativeRestartCheck(NativeEnvironment environment) {
         this.environment = environment;
@@ -174,6 +207,12 @@ public final class NativeRestartCheck {
         }
 
         String restarted = environment.identities().adminToken();
+        failures = verifyHistory(restarted);
+        if (failures.isEmpty()) {
+            record(true, "config history after the restart: " + historyBefore.size() + " rows");
+        } else {
+            record(false, "config history after the restart: " + String.join("; ", failures));
+        }
         failures = verify(restarted);
         cleanup(restarted);
         if (failures.isEmpty()) {
@@ -216,12 +255,73 @@ public final class NativeRestartCheck {
         require(failures, "config publish", form("POST", "/admin/cs/config", token,
                 Map.of("dataId", DATA_ID, "groupName", GROUP, "content", "restart=true", "type",
                         "properties")));
+        // The second publish updates the configuration, so its history holds an insert row and an
+        // update row.
+        require(failures, "config update", form("POST", "/admin/cs/config", token,
+                Map.of("dataId", DATA_ID, "groupName", GROUP, "content", UPDATED_CONTENT, "type",
+                        "properties")));
 
         // What the Server answers now is what it has to answer after the restart.
         NativeHttp.Response detail = get("/admin/ns/service?" + SERVICE_QUERY, token);
         require(failures, "service detail before the restart", detail);
         expect(failures, "label selector before the restart", detail, LABEL_SELECTOR);
         expect(failures, "MYSQL health checker before the restart", detail, MYSQL_CHECKER);
+
+        // The history is what the Server answers now, row by row, so that the restart can be
+        // compared with it. It has to be the history of an insert and of an update, with content.
+        historyBefore = readHistory(token, failures);
+        if (historyBefore.stream().noneMatch(row -> "I".equals(row.operation()))
+                || historyBefore.stream().noneMatch(row -> "U".equals(row.operation()))) {
+            failures.add("config history before the restart has no insert row and update row: "
+                    + historyBefore);
+        }
+        if (historyBefore.stream().anyMatch(row -> row.content().isEmpty())) {
+            failures.add("config history before the restart has a row without content: "
+                    + historyBefore);
+        }
+        return failures;
+    }
+
+    /**
+     * Reads the history of the configuration: the list, and the detail of each row of it.
+     *
+     * @param token    a token of the admin
+     * @param failures receives what could not be read
+     * @return the rows, in the order of their ids
+     */
+    private List<HistoryRow> readHistory(String token, List<String> failures) {
+        NativeHttp.Response list = get("/admin/cs/history/list?" + CONFIG_QUERY
+                + "&pageNo=1&pageSize=50", token);
+        require(failures, "config history list", list);
+        List<HistoryRow> rows = new ArrayList<>();
+        Matcher ids = HISTORY_ID.matcher(list.body());
+        while (ids.find()) {
+            String nid = ids.group(1);
+            NativeHttp.Response detail = get("/admin/cs/history?" + CONFIG_QUERY + "&nid=" + nid,
+                    token);
+            require(failures, "config history detail " + nid, detail);
+            rows.add(new HistoryRow(nid, firstGroup(HISTORY_OPERATION, detail.body()),
+                    firstGroup(HISTORY_CONTENT, detail.body())));
+        }
+        rows.sort(Comparator.comparingLong(row -> Long.parseLong(row.nid())));
+        return rows;
+    }
+
+    private static String firstGroup(Pattern pattern, String body) {
+        Matcher matcher = pattern.matcher(body);
+        return matcher.find() ? matcher.group(1) : "";
+    }
+
+    /**
+     * The history after the restart has to be the history that the Server answered before it.
+     */
+    private List<String> verifyHistory(String token) {
+        List<String> failures = new ArrayList<>();
+        List<HistoryRow> after = readHistory(token, failures);
+        if (!after.equals(historyBefore)) {
+            failures.add("the history changed: before the restart " + historyBefore
+                    + ", after it " + after);
+        }
         return failures;
     }
 
@@ -247,7 +347,7 @@ public final class NativeRestartCheck {
         NativeHttp.Response config = get("/admin/cs/config?dataId=" + DATA_ID + "&groupName="
                 + GROUP, token);
         require(failures, "config get after the restart", config);
-        expect(failures, "config content after the restart", config, "restart=true");
+        expect(failures, "config content after the restart", config, UPDATED_CONTENT);
         return failures;
     }
 

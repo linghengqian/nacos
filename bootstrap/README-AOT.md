@@ -595,7 +595,10 @@ code that saves the persistent naming data, the naming metadata and the locks on
 
 The integration stage ends with a restart check, `NativeRestartCheck`. It creates data that no
 suite creates: a persistent service with a label selector, a persistent instance in a cluster with
-the MYSQL health checker, a naming switch that the Raft group replicates and a configuration.
+the MYSQL health checker, a naming switch that the Raft group replicates and a configuration that
+it publishes twice, so that its history holds an insert row and an update row. The check reads the
+history, with the content of each row, before the restart and again after it; the two have to be
+the same.
 `NativeEnvironmentMain` waits for the snapshot timers, which fire every 30 to 60 seconds, stops the
 Server with SIGTERM, starts it again on the same home and database, and looks for the data. The
 report stage fails the job when a step failed or the check did not run, and it scans the logs of

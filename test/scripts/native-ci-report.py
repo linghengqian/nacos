@@ -44,6 +44,7 @@ RESTART_STEPS = (
     "stop",
     "start after the restart",
     "snapshots loaded by the restart",
+    "config history after the restart",
     "data after the restart",
 )
 
@@ -262,6 +263,9 @@ def selftest():
         expect("a missing restart report fails", run(restart_report=os.path.join(root, "none.txt")) == 1)
         write(os.path.join(root, "short.txt"), "PASS  seed\nPASS  stop\nPASS  start after the restart\nPASS  data after the restart\n")
         expect("a restart report without the snapshot steps fails", run(restart_report=os.path.join(root, "short.txt")) == 1)
+        write(os.path.join(root, "no-history.txt"),
+              "".join("PASS  %s\n" % s for s in RESTART_STEPS if not s.startswith("config history")))
+        expect("a restart report without the history step fails", run(restart_report=os.path.join(root, "no-history.txt")) == 1)
         write(os.path.join(root, "bad.txt"), "".join("PASS  %s\n" % s for s in RESTART_STEPS) + "FAIL  something\n")
         expect("a failed restart step fails", run(restart_report=os.path.join(root, "bad.txt")) == 1)
         report_xml(MODULE_OPENAPI, root, "p.KnownITCase", [("slow", "failed")])
