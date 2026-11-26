@@ -106,3 +106,44 @@ jobs:
           name: native-diagnostics-${{ matrix.scenario }}-${{ matrix.database }}-${{ matrix.variant }}${{ matrix.repeat && format('-run{0}', matrix.repeat) || '' }}
           path: target/ci-out
           if-no-files-found: ignore
+
+  trace-h2:
+    name: Trace the H2 Server under the tracing agent
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    env:
+      NATIVE_CI_SCENARIO: standard
+      NATIVE_CI_DATABASE: h2
+      NATIVE_CI_VARIANT: default
+      NATIVE_CI_SUITE: full
+      NATIVE_CI_OUT: ${{ github.workspace }}/target/ci-out
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Set up GraalVM Community 25.2
+        uses: graalvm/setup-graalvm@v1
+        with:
+          version: '25.2'
+          java-version: '25'
+          distribution: 'graalvm-community'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: 'maven'
+      - name: Select the scenario and the build options
+        run: bash test/scripts/native-ci.sh prepare
+      - name: Build the Native distribution
+        run: bash test/scripts/native-ci.sh build
+      - name: Run the suites against the Server under the tracing agent
+        run: |
+          TRACE="$GITHUB_WORKSPACE/target/trace"
+          mkdir -p "$TRACE" "$NATIVE_CI_OUT"
+          NATIVE_CI_TEST_OPTIONS="-Dnacos.native.test.mode=trace -Dnacos.native.test.trace.dir=$TRACE" bash test/scripts/native-ci.sh integration || true
+          python3 -I test/scripts/native-metadata.py refresh --classpath bootstrap/target/native/classpath.args --output "$NATIVE_CI_OUT/trace-delta.json" "$TRACE" | tee "$NATIVE_CI_OUT/trace-delta.txt" || true
+      - name: Upload the trace
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: h2-trace
+          path: |
+            target/trace
+            target/ci-out
+          if-no-files-found: ignore
