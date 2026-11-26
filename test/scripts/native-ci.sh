@@ -461,6 +461,10 @@ stage_report() {
     log "Integration test results"
     local status=0
     local baselines=(--baseline "$ROOT/test/scripts/native-ci-baseline.txt")
+    # CI only: the standard profile selects no AI importer and no LDAP or OIDC plugin.
+    if [ "$SCENARIO" = "standard" ]; then
+        baselines+=(--baseline "$ROOT/test/scripts/native-ci-baseline-plugin-scope.txt")
+    fi
     if [ "$SCENARIO" != "features" ]; then
         baselines+=(--baseline "$ROOT/test/scripts/native-ci-baseline-ard-off.txt")
     fi

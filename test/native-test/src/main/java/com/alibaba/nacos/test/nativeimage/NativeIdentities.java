@@ -35,7 +35,7 @@ public final class NativeIdentities {
 
     private static final String NO_PERMISSION_ROLE = "NACOS_IT_CLIENT_NO_PERMISSION";
 
-    private static final String[] CLIENT_RESOURCES = {"*:*:config/*", "*:*:naming/*", "*:*:ai/*"};
+    private static final String[] CLIENT_RESOURCES = {"*:*:config/*", "*:*:naming/*", "*:*:ai/*", "*:*:lock/*"};
 
     private static final Duration CONVERGENCE = Duration.ofSeconds(20);
 

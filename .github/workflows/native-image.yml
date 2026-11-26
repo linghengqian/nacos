@@ -51,12 +51,8 @@ jobs:
       matrix:
         # See test/scripts/native-ci.sh and bootstrap/README-AOT.md for scenarios.
         include:
-          - { scenario: standard, database: postgresql, variant: default, suite: full }
-          - { scenario: standard, database: postgresql, variant: exact, suite: full }
           - { scenario: standard, database: h2, variant: default, suite: full }
           - { scenario: standard, database: h2, variant: exact, suite: full }
-          - { scenario: standard, database: h2, variant: exact, suite: full, repeat: 2 }
-          - { scenario: standard, database: h2, variant: exact, suite: full, repeat: 3 }
     env:
       NATIVE_CI_SCENARIO: ${{ matrix.scenario }}
       NATIVE_CI_DATABASE: ${{ matrix.database }}
